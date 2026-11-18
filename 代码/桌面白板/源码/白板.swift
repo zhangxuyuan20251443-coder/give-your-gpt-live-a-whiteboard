@@ -494,7 +494,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
         }
         needsLayout=true
     }
-    func configure(keepDraft:Bool){
+    func configure(keepDraft:Bool, morph:Bool){
         group.isHidden=false;liveLead.isHidden=true;submitted=false;continued=false;receipt.isHidden=true;retry.isHidden=true;receipt.alphaValue=1
         mode.isHidden = !daily
         navigationChrome()
@@ -512,7 +512,8 @@ final class Canvas: NSView, NSTextFieldDelegate {
         first.stringValue=pair.0;second.stringValue=pair.1
         second.textColor=board.scene?.accent == "ink" ? ink : (board.scene?.accent == "rose" ? NSColor(srgbRed:0.68,green:0.24,blue:0.36,alpha:1) : orange)
         rule.strokeColor=second.textColor?.cgColor
-        diagram.spec=board.canvas;diagram.isHidden=board.canvas==nil;first.isHidden=board.canvas != nil;second.isHidden=board.canvas != nil && !liveSide
+        if morph { diagram.reconcile(board.canvas) } else { diagram.spec=board.canvas }
+        diagram.isHidden=board.canvas==nil;first.isHidden=board.canvas != nil;second.isHidden=board.canvas != nil && !liveSide
         voicePrint.isHidden = !editorialHeadline || liveSide
         if editorialHeadline {
             second.textColor=ink
@@ -534,15 +535,25 @@ final class Canvas: NSView, NSTextFieldDelegate {
         let changed=new.canvas != board.canvas || new.turnID != board.turnID || new.showID != board.showID || new.title != board.title || new.components != board.components || new.interaction != board.interaction || new.scene != board.scene
         let keepDraft=appeared && (!submitted || continued) && (!input.stringValue.isEmpty || input.currentEditor() != nil)
         let previouslyVisible=appeared
+        let morph = appeared && board.showID == new.showID && board.pageID != new.pageID
+            && board.visualStyle == new.visualStyle && (board.interaction == nil) == (new.interaction == nil)
+            && new.canvas?.transition != "cut" && canMorphPages(board.canvas, new.canvas)
         board=new;guard changed || !appeared else{tick();return}
         revision+=1
-        if previouslyVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && new.canvas?.transition != "cut" {
+        if previouslyVisible && !morph && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && new.canvas?.transition != "cut" {
             let slide=CATransition()
             slide.type=new.canvas?.transition=="push" ? .push : .fade;slide.subtype = .fromRight
             slide.duration=new.canvas?.transition=="push" ? 0.34 : 0.19
             slide.timingFunction=CAMediaTimingFunction(name:.easeOut);group.layer?.add(slide,forKey:"page")
         }
-        configure(keepDraft:keepDraft);arrive();appeared=true
+        configure(keepDraft:keepDraft, morph:morph)
+        arrive(animateDiagram:!morph)
+        appeared=true
+    }
+    private func canMorphPages(_ previous:CanvasSpec?, _ next:CanvasSpec?) -> Bool {
+        guard let a = previous?.nodes, let b = next?.nodes,
+              a.allSatisfy({ $0.id != nil }), b.allSatisfy({ $0.id != nil }) else { return false }
+        return a.contains { old in b.contains { $0.id == old.id && $0.type == old.type } }
     }
     func fit(_ label:NSTextField,_ font:String,_ base:CGFloat,_ width:CGFloat){
         let initial=NSFont(name:font,size:base) ?? .systemFont(ofSize:base)
@@ -669,11 +680,11 @@ final class Canvas: NSView, NSTextFieldDelegate {
         let a=CAAnimationGroup();a.animations=[fade,slide,rise,scale];a.duration=mode == "breathe" ? 1.6 : 0.72;a.beginTime=CACurrentMediaTime()+delay;a.fillMode = .backwards
         a.timingFunction=CAMediaTimingFunction(controlPoints:0.22,1,0.36,1);view.layer?.add(a,forKey:"editorial-enter")
     }
-    func arrive(){
+    func arrive(animateDiagram:Bool){
         group.alphaValue=1
         if editorialHeadline && !liveSide {enter(voicePrint,14,0)}
         if liveSide && board.canvas != nil {enter(second,-18,0)}
-        if board.canvas != nil{diagram.animate();if board.canvas?.transition=="lift"{enter(diagram,0,0)}}else{enter(first,-45,0);enter(second,55,0.15)}
+        if board.canvas != nil{if animateDiagram { diagram.animate() };if board.canvas?.transition=="lift"{enter(diagram,0,0)}}else{enter(first,-45,0);enter(second,55,0.15)}
         let turn=board.turnID ?? ""
         var duration=0.9
         for node in board.canvas?.nodes ?? [] {
@@ -701,7 +712,10 @@ final class Canvas: NSView, NSTextFieldDelegate {
         guard !submitted,board.interaction != nil else{return}
         guard onReply?(answer)==true else{feedback.stringValue="页面已改变，请重试";return}
         continued=answer==nil
-        submitted=true;updateVoice();input.isEnabled=false;send.isEnabled=false;choices.forEach{$0.isEnabled=false}
+        submitted=true
+        if input.currentEditor() != nil { window?.makeFirstResponder(self) }
+        updateVoice();input.isEnabled=false;send.isEnabled=false;choices.forEach{$0.isEnabled=false}
+        editStatus?(false)
         input.layer?.removeAnimation(forKey:"editorial-enter");receipt.stringValue=answer ?? "";receipt.isHidden=continued;feedback.stringValue=daily ? (mode.indexOfSelectedItem==2 ? "正在翻页…" : "正在生成下一句…") : (continued ? "等待下一句…" : "已收到 · 等待 Dot 读取")
         NSAnimationContext.runAnimationGroup({c in c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.22;self.input.animator().alphaValue=0;self.send.animator().alphaValue=0;self.choices.forEach{$0.animator().alphaValue=0};self.group.animator().alphaValue=0.65})
         receipt.alphaValue=1;CATransaction.flush();didSubmit?()

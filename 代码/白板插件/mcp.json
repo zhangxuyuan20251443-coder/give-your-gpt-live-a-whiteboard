@@ -10,6 +10,16 @@
         "mcp"
       ],
       "cwd": "${PLUGIN_ROOT}"
+    },
+    "whiteboard": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": [
+        "-B",
+        "${PLUGIN_ROOT}/skills/dynamic-whiteboard/scripts/board.py",
+        "mcp"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

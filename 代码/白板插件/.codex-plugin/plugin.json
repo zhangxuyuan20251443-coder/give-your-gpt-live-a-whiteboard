@@ -1,0 +1,25 @@
+{
+  "name": "dynamic-whiteboard",
+  "version": "2.0.0",
+  "description": "对话模型用 CLI 或 MCP 发页、绘图、收取回答，画面在 Mac 上原生播放。",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "动态白板",
+    "shortDescription": "在对话中画图、逐页讲解并接收回答",
+    "longDescription": "模型决定何时开板，按需发布短句、图形和动画。观众可打字、点选或跳过。",
+    "developerName": "本机",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "brandColor": "#F7513C",
+    "defaultPrompt": [
+      "在白板上接着和我聊",
+      "把这段回答分开说，重要的地方问我",
+      "打开一份动态文稿"
+    ]
+  }
+}
