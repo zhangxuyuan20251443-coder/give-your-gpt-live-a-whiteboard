@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "title": "A moment to move",
+  "pages": [
+    {
+      "id": "question",
+      "title": "Have you moved today?",
+      "interaction": {"choices": ["Yes", "Not yet"]}
+    },
+    {
+      "id": "step",
+      "title": "One small step counts.",
+      "interaction": {}
+    }
+  ]
+}

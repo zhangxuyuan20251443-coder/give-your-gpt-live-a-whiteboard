@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "dynamic_whiteboard": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": [
+        "-B",
+        "${PLUGIN_ROOT}/运行时/scripts/演示文稿.py",
+        "mcp"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}
