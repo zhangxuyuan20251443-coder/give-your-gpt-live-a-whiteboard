@@ -7,10 +7,12 @@ def make_pages(values, deck, limit=4):
     deck.check(isinstance(values, list) and 1 <= len(values) <= limit, '一次发送 1–%d 页' % limit)
     pages = []
     for value in values:
-        deck.check(isinstance(value, dict) and not set(value) - {'id', 'text', 'choices', 'drawing', 'canvas'}, '未知现场页字段')
-        deck.check(not ('drawing' in value and 'canvas' in value), '请选择配图或自由画布')
+        deck.check(isinstance(value, dict) and not set(value) - {'id', 'text', 'choices', 'drawing', 'canvas', 'board'}, '未知现场页字段')
+        deck.check(sum(k in value for k in ('drawing', 'canvas', 'board')) <= 1, '请选择配图、自由画布或场景之一')
         page = {'id': value.get('id'), 'title': value.get('text'), 'interaction': {},
-                'visualStyle': 'live-full' if 'canvas' in value else 'live-side'}
+                'visualStyle': 'board' if 'board' in value else 'live-full' if 'canvas' in value else 'live-side'}
+        if 'board' in value:
+            page['board'] = value['board']
         if 'choices' in value:
             page['interaction']['choices'] = value['choices']
         if 'drawing' in value or 'canvas' in value:

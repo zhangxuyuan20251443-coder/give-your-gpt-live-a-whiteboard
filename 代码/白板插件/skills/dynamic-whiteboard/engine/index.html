@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>动态白板</title>
+<link rel="stylesheet" href="board.css">
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+    <div id="world">
+      <svg id="under" viewBox="0 0 1600 1000" preserveAspectRatio="none"><defs id="defs"></defs></svg>
+      <div id="texts"></div>
+      <svg id="over" viewBox="0 0 1600 1000" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+</div>
+<div id="grain"></div>
+<header id="top">
+  <div id="title"><i></i><span></span></div>
+  <div id="pager"></div>
+  <div id="esc">esc</div>
+</header>
+<footer id="bottom">
+  <div id="choices"></div>
+  <form id="ask" autocomplete="off">
+    <input id="input" type="text" placeholder="说点什么…  Enter 发送" spellcheck="false">
+  </form>
+  <div id="receipt"><i></i><span>已收到 · 等待回复</span></div>
+  <div id="hint">空格 继续 · ← → 翻页 · 打字即可回答 · Esc 收起</div>
+</footer>
+<script src="board.js"></script>
+</body>
+</html>

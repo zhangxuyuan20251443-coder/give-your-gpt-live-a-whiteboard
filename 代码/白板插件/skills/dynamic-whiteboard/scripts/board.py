@@ -5,7 +5,7 @@
     board.py say < pages.json                带图的页面（JSON 从标准输入读）
     board.py ask "问题？" --choice 甲 --choice 乙   显示问题并等回答
     board.py wait [--wait 45]                继续等用户在白板上的输入
-    board.py edit '{"node":"arrow","set":{"color":"orange"}}'   原位改当前页的图
+    board.py edit '@arrow pink'          原位改当前页（速写：@名字 参数 / x @名字 / 新行 / == 新句子）
     board.py close                           讲完收起
     board.py status | check | describe | doctor | demo | present --file 文稿.json | mcp
 
@@ -31,9 +31,11 @@ sys.path.insert(0, str(HERE))
 import whiteboard as board  # noqa: E402  渲染器文件协议
 import 演示文稿 as deck  # noqa: E402  文稿模型；原生播放器也会调用它
 import shapes  # noqa: E402
+import sketch  # noqa: E402
+import scene as scene_mod  # noqa: E402
 import 现场白板 as live
 
-VERSION = '2.0.0'
+VERSION = '4.0.0'
 DATA = board.DATA
 SKILL_STATE = DATA / 'skill-state.json'
 REOPEN_COOLDOWN = 20 * 60
@@ -134,6 +136,8 @@ def current_live():
     fresh = st.get('action') == 'show' and time.time() - st.get('writtenAt', 0) < 8
     if not board.visible():
         return st if fresh else None
+    if s.get('renderer') != 'engine':
+        return None
     if s.get('showID') != st.get('showID') and not (st.get('action') == 'show' and st.get('writtenAt', 0) > s.get('rendererObservedAt', 0)):
         return None
     return st
@@ -186,11 +190,18 @@ def parse_payload(raw):
     text = raw.strip()
     if not text:
         return None
-    if text[0] in '[{"':
+    if text[0] in '[{':
         try:
             return json.loads(text)
         except ValueError as exc:
             raise Fail('invalid', 'JSON 无法解析：%s' % exc, '检查引号和逗号；用 <<\'JSON\' 包住多行 JSON。')
+    if text[0] == '"' and '\n' not in text:
+        try:
+            value = json.loads(text)
+            if isinstance(value, str):
+                return value
+        except ValueError:
+            pass
     return text
 
 
@@ -213,10 +224,15 @@ def normalize_pages(value):
         page = dict(item)
         if 'title' in page and 'text' not in page:
             page['text'] = page.pop('title')
-        extra = set(page) - {'id', 'text', 'choices', 'drawing', 'canvas'}
+        extra = set(page) - {'id', 'text', 'choices', 'drawing', 'canvas', 'sketch', 'board'}
         if extra:
             raise Fail('invalid', '页面不支持字段：' + '、'.join(sorted(extra)),
-                       '页面字段只有 text、choices、drawing（文字旁配图）、canvas（整页画布）、id（可省略）。')
+                       '页面字段：text、sketch（速写元素行）、board（场景 JSON）、choices、drawing、canvas、id（可省略）。')
+        if 'board' in page:
+            try:
+                scene_mod.validate_scene(page['board'])
+            except ValueError as exc:
+                raise Fail('invalid', str(exc), '场景格式见 references/scene.md。')
         if not isinstance(page.get('text'), str) or not page['text'].strip():
             raise Fail('invalid', '每页都需要 text', 'text 是这一页要说的一句话；用整页 canvas 时它作为页标题。')
         page['text'] = page['text'].strip()
@@ -228,6 +244,104 @@ def normalize_pages(value):
                     raise Fail('invalid', str(exc), '宏参数见 references/canvas.md 的「图形宏」。')
         pages.append(page)
     return pages
+
+
+def sketch_fail(exc):
+    if isinstance(exc, sketch.SketchError):
+        return Fail('invalid', str(exc), '速写语法见 SKILL.md「速写」；画复杂的页先用 check 试。')
+    return explain(exc)
+
+
+def prepare(value, plain=False):
+    """输入 → 现场页列表 + 速写档案 {页 id: record}（供 edit 增量修改）。"""
+    records = {}
+    warnings = {}
+
+    def keep(compiled, pid=None):
+        pid = pid or 'p-' + uuid.uuid4().hex[:6]
+        if compiled.get('warnings'):
+            warnings[pid] = ['「%s」%s' % (compiled['text'][:10], w) for w in compiled['warnings']]
+        page = {'id': pid, 'text': compiled['text']}
+        if compiled['board'] is not None:
+            page['board'] = compiled['board']
+            records[pid] = {'text': compiled['raw'], 'head': compiled['head'], 'specs': sketch.clean_specs(compiled['specs'])}
+        return page
+
+    try:
+        if isinstance(value, str) and sketch.is_sketch(value):
+            pages = [keep(c) for c in sketch.compile_sketch(value)]
+        else:
+            pages = []
+            for page in normalize_pages(value):
+                if 'sketch' in page:
+                    if not isinstance(page['sketch'], str):
+                        raise Fail('invalid', 'sketch 应为多行字符串（每行一个元素）')
+                    compiled = keep(sketch.compile_page(page['text'], page['sketch']), page.get('id'))
+                    if 'choices' in page:
+                        compiled['choices'] = page['choices']
+                    pages.append(compiled)
+                elif plain or any(k in page for k in ('choices', 'drawing', 'canvas', 'board')):
+                    page['text'] = page['text'].replace('**', '').strip()
+                    pages.append(page)
+                else:
+                    pages.append(keep(sketch.compile_page(page['text']), page.get('id')))
+    except (sketch.SketchError, ValueError) as exc:
+        if isinstance(exc, Fail):
+            raise
+        raise sketch_fail(exc)
+    if not pages:
+        raise Fail('invalid', '没有要显示的页面', '至少写一行 == 这一页要说的话。')
+    if len(pages) > MAX_PAGES_PER_CALL:
+        raise Fail('invalid', '一次最多 %d 页' % MAX_PAGES_PER_CALL, '先发前几页，讲到时再追加。')
+    prepare.warnings = warnings
+    return pages, records
+
+
+prepare.warnings = {}
+
+KIND_NAME = {'circle': '圆', 'box': '方框', 'line': '线', 'arrow': '箭头', 'arrow_start': '箭头', 'arrow_both': '箭头', 'curve': '曲线',
+             'carrow': '曲线箭头', 'carrow_start': '曲线箭头', 'carrow_both': '曲线箭头', 'wave': '波', 'poly': '多边形',
+             'blob': '色块', 'arc': '弧', 'icon': '图标', 'image': '图片', 'text': '文字'}
+
+
+def label_for(eid, record):
+    for spec in (record or {}).get('specs', []):
+        if spec.get('id') == eid:
+            where = '第 %d 行' % spec['ln'] if spec.get('ln') and not spec.get('auto') else ('自动显示的句子' if spec.get('auto') else '@' + eid)
+            if spec['kind'] == 'text':
+                return '%s「%s」' % (where, sketch.plain_text(spec['text']).replace('\n', ' ')[:10])
+            return '%s的%s（@%s）' % (where, KIND_NAME.get(spec['kind'], '元素'), eid)
+    return '@' + eid
+
+
+def measured(page_id, record, timeout=1.8):
+    """等渲染引擎报告这一页的真实排版。拿不到（旧播放器、窗口没开）时返回 None。"""
+    if renderer().get('renderer') != 'engine':
+        return None
+    st = content()
+    rev, show = st.get('documentRevision'), st.get('showID')
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        rep = board.read(DATA / 'layout-report.json')
+        if rep.get('pageID') == page_id and rep.get('rev') == rev and rep.get('showID') == show:
+            out = []
+            for w in rep.get('warnings') or []:
+                a, b = label_for(w.get('a'), record), label_for(w.get('b'), record) if w.get('b') else ''
+                out.append({'overlap': '%s 和 %s 重叠' % (a, b), 'cross': '%s 穿过了 %s' % (a, b), 'out': '%s 超出了画面' % a,
+                            'tiny': '%s 字太小，远处看不清' % a, 'contrast': '%s 和下面的 %s 颜色太接近' % (a, b)}.get(w.get('type'), str(w)))
+            return out
+        time.sleep(0.05)
+    return None
+
+
+def remember(records):
+    if records:
+        with deck.lock():
+            ks = skill_state()
+            book = ks.get('sketch', {})
+            book.update(records)
+            ks['sketch'] = dict(list(book.items())[-80:])
+            board.write(SKILL_STATE, ks)
 
 
 def assign_ids(pages, taken):
@@ -258,7 +372,9 @@ def to_live_page(page):
     choices = (page.get('interaction') or {}).get('choices')
     if choices:
         out['choices'] = choices
-    if page.get('canvas'):
+    if page.get('board'):
+        out['board'] = page['board']
+    elif page.get('canvas'):
         out['canvas' if page.get('visualStyle') == 'live-full' else 'drawing'] = page['canvas']
     return out
 
@@ -266,8 +382,8 @@ def to_live_page(page):
 # ---------- 打开窗口 ----------
 
 def launch(show_id):
-    if not (board.APP / 'Contents' / 'MacOS').exists():
-        raise Fail('not-installed', '找不到播放器：%s' % board.APP, '运行 board.py doctor 检查安装。')
+    if not (HERE.parent / 'engine' / 'board.js').exists():
+        raise Fail('not-installed', '找不到渲染引擎 engine/', '把整个技能文件夹完整放好，再运行 board.py doctor。')
     try:
         board.open_app('--external', show_id)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -297,6 +413,8 @@ def open_board(pages, topic=None, replace=False):
             raise Fail('busy', '已有白板正在启动', '稍后重试。')
         visible = board.visible()
         if visible:
+            if s.get('renderer') != 'engine':
+                raise Fail('busy', '旧播放器仍在显示，请先按 Esc 退出。')
             if s.get('editing'):
                 raise Fail('editing', '用户正在白板上输入', '先用 wait 等他把话发出来。')
             if not replace:
@@ -381,6 +499,8 @@ def push(pages, mode='auto', topic=None, replace=False):
         now = content()
         out = dict({'ok': True, 'status': 'queued' if (queued_reason or effective == 'queue') and not replying else 'shown'},
                    **summary(now))
+        for page, assigned in zip(pages, batch):
+            page['id'] = assigned['id']
         if replying:
             out['replied_to'] = ev.get('kind')
         if queued_reason:
@@ -393,11 +513,35 @@ def push(pages, mode='auto', topic=None, replace=False):
 
 # ---------- 命令 ----------
 
-def cmd_say(value, mode='auto', topic=None, replace=False):
+def cmd_say(value, mode='auto', topic=None, replace=False, plain=False):
     if mode not in ('auto', 'now', 'queue'):
         raise Fail('invalid', 'mode 应为 auto、now 或 queue。')
-    pages = validated_shape(normalize_pages(value))
-    return push(pages, mode, topic, replace)
+    pages, records = prepare(value, plain)
+    pages = validated_shape(pages)
+    estimates = dict(prepare.warnings)
+    original_ids = [page.get('id') for page in pages]
+    out = push(pages, mode, topic, replace)
+    records = {page['id']: records[pid] for pid, page in zip(original_ids, pages) if pid in records and 'id' in page}
+    estimates = {page['id']: estimates[pid] for pid, page in zip(original_ids, pages) if pid in estimates and 'id' in page}
+    if out.get('ok') and out.get('status') in ('shown', 'queued', 'opening'):
+        remember(records)
+        warnings = []
+        shown = content().get('pageID')
+        if out['status'] != 'queued' and shown in records:
+            real = measured(shown, records[shown])
+            if real is not None:
+                estimates.pop(shown, None)
+                warnings += real
+                out['measured'] = True
+                if out['status'] == 'opening':
+                    out['status'] = 'shown'
+                    out.pop('hint', None)
+        for pid in [p['id'] for p in pages]:
+            warnings += estimates.get(pid, [])
+        if warnings:
+            out['warnings'] = warnings[:10]
+            out.setdefault('hint', '画面已显示，但有排版问题（见 warnings）。用 edit 挪位置或改字号，比如 @名字 40,60 或 @名字 m。')
+    return out
 
 
 def validated_shape(pages):
@@ -445,11 +589,12 @@ def cmd_ask(value, choices=None, seconds=45, topic=None, replace=False):
     pages = normalize_pages(value)
     if len(pages) != 1:
         raise Fail('invalid', 'ask 一次只问一页')
+    pages[0]['text'] = pages[0]['text'].replace('**', '').strip()
     if choices:
         pages[0]['choices'] = choices
     if type(seconds) not in (int, float) or not 0 <= seconds <= 120:
         raise Fail('invalid', '等待时间应为 0–120 秒')
-    shown = push(validated_shape(pages), 'auto', topic, replace)
+    shown = cmd_say(pages, 'auto', topic, replace, plain=True)
     if shown.get('status') == 'queued':
         shown['hint'] = '问题已排队。用 wait 接收输入，on_page 标明实际作答的页面。'
         return shown
@@ -474,82 +619,122 @@ def cmd_wait(seconds=45):
     return listen(st, seconds)
 
 
-def cmd_edit(spec):
-    if not isinstance(spec, dict):
-        raise Fail('invalid', 'edit 需要一个 JSON 对象', '例如 {"node":"arrow","set":{"color":"orange"}}。')
-    allowed = {'page', 'node', 'set', 'changes', 'add', 'remove', 'text', 'transition'}
-    if set(spec) - allowed:
-        raise Fail('invalid', 'edit 不支持字段：' + '、'.join(sorted(set(spec) - allowed)),
-                   'edit 字段：page、node+set、changes、add、remove、text、transition。')
-    if any(not isinstance(spec.get(key, []), list) for key in ('changes', 'remove')) or not all(isinstance(k, str) for k in spec.get('remove', [])):
+def json_edit(found, spec):
+    if any(not isinstance(spec.get(k, []), list) for k in ('changes', 'remove')) or not all(isinstance(n, str) for n in spec.get('remove', [])):
         raise Fail('invalid', 'changes 和 remove 应为列表，remove 的每项应为图元 id。')
+    if found.get('board'):
+        raise Fail('invalid', '这一页是速写画的，edit 请用速写行', '例如：@名字 pink、x @名字、新的一行、== 新句子。')
+    page = copy.deepcopy(found)
+    canvas = copy.deepcopy(page.get('canvas') or {'nodes': []})
+    nodes = canvas.get('nodes', [])
+    changes = list(spec.get('changes') or [])
+    if 'node' in spec:
+        changes.append({'node': spec['node'], 'set': spec.get('set')})
+    for change in changes:
+        nid = change.get('node') if isinstance(change, dict) else None
+        attrs = change.get('set') if isinstance(change, dict) else None
+        if not isinstance(nid, str) or not isinstance(attrs, dict) or not attrs or set(attrs) & {'id', 'type'}:
+            raise Fail('invalid', '每项修改需要 node 和非空 set（不能改 id / type）')
+        targets = [n for n in nodes if n.get('id') == nid or str(n.get('id', '')).startswith(nid + '-')]
+        if not targets:
+            ids = [n.get('id') for n in nodes if n.get('id')]
+            raise Fail('invalid', '当前页没有图元 %s' % nid, '现有图元 id：%s' % ('、'.join(ids) or '（无）'))
+        for node in targets:
+            node.update(attrs)
+    remove = spec.get('remove') or []
+    if remove:
+        nodes = [n for n in nodes if not any(n.get('id') == r or str(n.get('id', '')).startswith(r + '-') for r in remove)]
+    if spec.get('add'):
+        add = spec['add'] if isinstance(spec['add'], list) else [spec['add']]
+        try:
+            fresh = shapes.expand_nodes(add)
+        except ValueError as exc:
+            raise Fail('invalid', str(exc))
+        existing = {n.get('id') for n in nodes if n.get('id')}
+        for node in fresh:
+            if isinstance(node, dict) and node.get('id') in existing:
+                raise Fail('invalid', '图元 id 已存在：%s' % node['id'], '换一个 id，或用 node+set 修改它。')
+        nodes = nodes + fresh
+    canvas['nodes'] = nodes
+    if 'transition' in spec:
+        canvas['transition'] = spec['transition']
+    page['canvas'] = canvas if nodes else None
+    if 'text' in spec:
+        page['title'] = spec['text'].replace('**', '').strip()
+    return page, None
+
+
+def sketch_edit(found, src):
+    record = skill_state().get('sketch', {}).get(found['id'])
+    if record is None:
+        raise Fail('invalid', '这一页不是用速写画的', '用 JSON 形式的 edit，或用 say 发一页新的。')
+    try:
+        new = sketch.edit_specs(record, src)
+        canvas, specs = sketch.rebuild(new)
+    except (sketch.SketchError, ValueError) as exc:
+        raise sketch_fail(exc)
+    new['specs'] = sketch.clean_specs(specs)
+    sketch_edit.warnings = list(sketch.build.last_warnings)
+    page = copy.deepcopy(found)
+    page['title'] = sketch.plain_text(new['text']).replace('\n', ' ').strip()
+    page['board'] = canvas
+    return page, new
+
+
+def cmd_edit(spec):
+    if isinstance(spec, str):
+        make, page_ref = (lambda found: sketch_edit(found, spec)), None
+    elif isinstance(spec, dict):
+        allowed = {'page', 'node', 'set', 'changes', 'add', 'remove', 'text', 'transition'}
+        if set(spec) - allowed:
+            raise Fail('invalid', 'edit 不支持字段：' + '、'.join(sorted(set(spec) - allowed)),
+                       '速写写法：@id 参数 改、x @id 删、新的一行 加、== 新句子 换主句。')
+        make, page_ref = (lambda found: json_edit(found, spec)), spec.get('page')
+    else:
+        raise Fail('invalid', 'edit 需要速写行或 JSON', '例如：@pull pink w4')
     for attempt in range(2):
         st = current_live()
         if st is None:
             raise Fail('closed', '白板已关闭', '用户已收起白板；用文字继续。')
         pages = st['document']['pages']
-        page_id = spec.get('page', st['pageID'])
+        page_id = page_ref or st['pageID']
         found = [p for p in pages if p['id'] == page_id]
         if not found:
             raise Fail('invalid', '找不到页 %s' % page_id, '省略 page 即修改当前页。')
-        page = copy.deepcopy(found[0])
-        canvas = copy.deepcopy(page.get('canvas') or {'nodes': []})
-        nodes = canvas.get('nodes', [])
-        changes = list(spec.get('changes') or [])
-        if 'node' in spec:
-            changes.append({'node': spec['node'], 'set': spec.get('set')})
-        for change in changes:
-            nid, attrs = change.get('node') if isinstance(change, dict) else None, change.get('set') if isinstance(change, dict) else None
-            if not isinstance(nid, str) or not isinstance(attrs, dict) or not attrs or set(attrs) & {'id', 'type'}:
-                raise Fail('invalid', '每项修改需要 node 和非空 set（不能改 id / type）')
-            targets = [n for n in nodes if n.get('id') == nid or str(n.get('id', '')).startswith(nid + '-')]
-            if not targets:
-                ids = [n.get('id') for n in nodes if n.get('id')]
-                raise Fail('invalid', '当前页没有图元 %s' % nid, '现有图元 id：%s' % ('、'.join(ids) or '（无）'))
-            for node in targets:
-                node.update(attrs)
-        remove = spec.get('remove') or []
-        if remove:
-            nodes = [n for n in nodes if not any(n.get('id') == r or str(n.get('id', '')).startswith(r + '-') for r in remove)]
-        if spec.get('add'):
-            add = spec['add'] if isinstance(spec['add'], list) else [spec['add']]
-            try:
-                fresh = shapes.expand_nodes(add)
-            except ValueError as exc:
-                raise Fail('invalid', str(exc))
-            existing = {n.get('id') for n in nodes if n.get('id')}
-            for node in fresh:
-                if isinstance(node, dict) and node.get('id') in existing:
-                    raise Fail('invalid', '图元 id 已存在：%s' % node['id'], '换一个 id，或用 node+set 修改它。')
-            nodes = nodes + fresh
-        canvas['nodes'] = nodes
-        if 'transition' in spec:
-            canvas['transition'] = spec['transition']
-        page['canvas'] = canvas if nodes else None
-        if 'text' in spec:
-            page['title'] = spec['text']
+        page, record = make(found[0])
         try:
             deck.validate_page(page)
         except ValueError as exc:
             raise explain(exc)
+        nodes = (page.get('board') or {}).get('els') or (page.get('canvas') or {}).get('nodes', [])
         ev = pending_for(st)
         if ev:
             if ev.get('kind') != 'continue' and ev.get('id') != skill_state().get('acked'):
                 return interrupted(ev, st, '这次修改没有执行。')
-            # 用户已作答：回合已切换，把改好的图作为新的一页接在回答后面。
+            # 用户已作答：回合已切换，把改好的画面作为新的一页接在回答后面。
             page['id'] = assign_ids([{'id': page_id + '-r'}], [p['id'] for p in pages])[0]['id']
-            res = publish({'session': st['showID'], 'generation': st['liveGeneration'], 'eventID': ev['id'],
-                           'pages': [to_live_page(page)]})
+            publish({'session': st['showID'], 'generation': st['liveGeneration'], 'eventID': ev['id'],
+                     'pages': [to_live_page(page)]})
+            if record:
+                remember({page['id']: record})
             return dict({'ok': True, 'status': 'shown', 'replied_to': ev.get('kind'),
-                         'note': '用户已作答，改好的图作为新的一页接在回答后面。'}, **summary(content()))
+                         'note': '用户已作答，改好的画面作为新的一页接在回答后面。'}, **summary(content()))
         try:
             deck.run('edit', {'session': st['showID'], 'revision': st['documentRevision'],
-                              'changes': [{'op': 'set', 'id': page_id, 'set': {'title': page['title'], 'canvas': page['canvas']}}]})
+                              'changes': [{'op': 'set', 'id': page_id, 'set': {k: page.get(k) for k in ('title', 'board', 'canvas') if k in page}}]})
         except ValueError as exc:
             if attempt == 0 and '文稿已更新' in str(exc):
                 continue
             raise explain(exc)
-        return dict({'ok': True, 'status': 'edited', 'nodes': [n.get('id') for n in nodes if n.get('id')]}, **summary(content()))
+        if record:
+            remember({page_id: record})
+        out = dict({'ok': True, 'status': 'edited', 'ids': [n.get('id') for n in nodes if n.get('id')]}, **summary(content()))
+        if record:
+            real = measured(page_id, record) if content().get('pageID') == page_id else None
+            warnings = real if real is not None else getattr(sketch_edit, 'warnings', None)
+            if warnings:
+                out['warnings'] = warnings
+        return out
     raise Fail('stale', '白板一直在变化，没能修改', '稍后重试。')
 
 
@@ -603,16 +788,27 @@ def cmd_status():
     return out
 
 
-def cmd_check(value):
-    pages = normalize_pages(value)
+def cmd_check(value, plain=False, full=False):
+    pages, _ = prepare(value, plain)
     probe = assign_ids(copy.deepcopy(pages), [])
-    result = []
+    result, engine = [], []
     for i in range(0, len(probe), 4):
-        for page in validated(probe[i:i + 4]):
-            nodes = (page.get('canvas') or {}).get('nodes', [])
-            result.append({'text': page['title'], 'style': page['visualStyle'], 'nodes': len(nodes),
-                           'chars': sum(len(n.get('text', '')) for n in nodes if n.get('type') == 'text')})
-    return {'ok': True, 'status': 'valid', 'pages': result, 'expanded': probe}
+        engine += validated(probe[i:i + 4])
+    for page in engine:
+        els = (page.get('board') or {}).get('els') or (page.get('canvas') or {}).get('nodes', [])
+        result.append({'text': page['title'], 'elements': len(els), 'ids': [n.get('id') for n in els if n.get('id')],
+                       'style': page['visualStyle'], 'nodes': len(els),
+                       'chars': sum(len(n.get('text', '')) for n in els if n.get('type') == 'text')})
+    out = {'ok': True, 'status': 'valid', 'pages': result}
+    estimates = [w for ws in prepare.warnings.values() for w in ws]
+    if estimates:
+        out['warnings'] = estimates[:10]
+        out['note'] = 'check 的排版提示是估算；真正显示后，say 会附上渲染引擎实测的结果。'
+    if full:
+        out['expanded'] = engine
+    elif all('board' not in page for page in probe):
+        out['expanded'] = probe
+    return out
 
 
 def cmd_present(path):
@@ -630,6 +826,8 @@ def cmd_present(path):
                     page['canvas'] = shapes.expand_canvas(page['canvas'])
     try:
         was_visible = board.visible()
+        if was_visible and renderer().get('renderer') != 'engine':
+            raise Fail('busy', '旧播放器仍在显示，请先按 Esc 退出。')
         info = deck.run('present', {'document': doc})
     except ValueError as exc:
         raise explain(exc)
@@ -641,35 +839,52 @@ def cmd_present(path):
                  'hint': '这是完整文稿，用户用空格 / 方向键翻页。要现场讲解请用 say --new。'}, **info)
 
 
-def cmd_demo():
-    doc = json.loads((HERE.parent / 'examples' / '声音怎样传播.白板.json').read_text(encoding='utf-8'))
-    pages = [{'id': p['id'], 'text': p['title'], 'canvas': p['canvas']} for p in doc['pages']]
-    return push(pages, 'now', doc['title'], replace=True)
+def cmd_demo(name='潮汐'):
+    if name in ('声音怎样传播', '声音'):
+        return cmd_present(HERE.parent / 'examples' / '声音怎样传播.白板.json')
+    if name not in {f.stem for f in (HERE.parent / 'examples').glob('*.sketch')}:
+        raise Fail('invalid', '请选择已安装的示例。')
+    path = HERE.parent / 'examples' / ('%s.sketch' % name)
+    if not path.exists():
+        raise Fail('invalid', '没有示例 %s' % name, '可选：%s' % '、'.join(p.stem for p in (HERE.parent / 'examples').glob('*.sketch')))
+    out = cmd_say(path.read_text(encoding='utf-8'), 'now', name, replace=True)
+    out['hint'] = '示例已打开：按空格翻页，Esc 收起。示例源文件在 examples/%s.sketch，可以照着写。' % name
+    return out
 
 
 DESCRIBE = {
-    'page': '{"text":"一句话","choices":["最多3个"],"drawing":{nodes…} 或 "canvas":{nodes…}}；text 必填，其余可省。drawing 在文字旁配图；canvas 用整页，页面要看见的字也放进画布。',
-    'canvas': '{"nodes":[…1–12 个], "transition":"crossfade|cut|lift|push"}；坐标 0–1，左上为原点，y 向下；整页文字合计 ≤80 字。',
-    'nodes': {
-        'text': 'text(1–40字) x y w h size(0.03–0.6，字号上限，放不下 w 时自动缩小) weight(light|regular|semibold) align(left|center|right) effect(none|underline|outline)',
-        'rect / circle': 'x y w h（外框） fill color stroke',
-        'line / polyline / arrow': 'points:[[x,y],…] 2–32 个；arrow 箭头在最后一点',
-        'bezier': 'points 数为 4、7、10…：起点 + 每段(控制点1, 控制点2, 终点)',
+    'stage': '16:10；坐标 0–100（x 宽度 %、y 高度 %），字号 / 半径 / 图标大小按高度 %。底部 12% 留给输入框。',
+    'page': '== 这一页要说的话 | push lift zoom cut bg:颜色 plain（整页没写文字时自动显示这句，**重点** 加粗上色）',
+    'elements': {
+        '文字 | 参数': '**重点** __高亮__ ~~删除~~ {pink:文字} \\n 换行；不写坐标就接在上一段下面',
+        'o x,y 半径': '圆', 'b x,y 宽x高': '方框（round 圆角）', '- / -> / <-> 点 点…': '线、箭头',
+        '~ / ~> 点 点…': '平滑曲线（首尾同点闭合）；~> a b 0.3 弧线', 'w x,y 宽x高 周期 [振幅]': '波',
+        'p 点 点 点…': '多边形', 'blob x,y 大小 [种子]': '有机色块', 'arc x,y 半径 起角 止角': '弧（0° 正上、顺时针），+颜色 为扇形',
+        'i 名字 x,y 大小': 'Lucide 图标', 'img 路径 x,y 宽x高': '本机图片', 'cam x,y 倍数': '镜头推近；cam reset 复位',
     },
-    'paint': 'color / fill：ink orange rose muted none 或 #RRGGBB（品牌色 #F7513C 橙、#FF8066 浅橙、#FA70AB 粉）；stroke 1–10',
-    'motion': 'motion: none fade rise slide pop draw；delay 0–1 秒；duration 0.1–2 秒。线条用 draw 会逐笔画出。',
-    'marker': '线条可带 marker:{"radius":2–18,"duration":0.1–4,"color":…}，一个圆点沿路径移动',
-    'timeline': '[{"property":"x|y|scale|rotation|opacity|draw","keys":[[0,值],[秒,值]…],"easing":"linear|ease|ease-in|ease-out"}]，2–24 帧，0 秒起，最长 8 秒；x/y 为相对位移（-1–1）',
-    'macros': {
-        'wave': '{"type":"wave","x","y","w","h","cycles":0.5–5,"amp":0–1,"decay":0.1–1,"flip":bool,+线条样式}',
-        'curve': '{"type":"curve","from":[x,y],"to":[x,y],"bend":-1–1,"head":bool,+线条样式}',
-        'flow': '{"type":"flow","items":[2–5 个],"x","y","w","h","direction":"row|column","size","color","arrow_color"}',
-        'cycle': '{"type":"cycle","items":[3–5 个],"x","y","w","h","size","color","arrow_color","heads":bool}',
-        'bars': '{"type":"bars","values":[1–6 个],"labels":[…],"x","y","w","h","max","color","colors"}',
+    'flags': {
+        '字号': 'xs s m l xl xxl huge 或数字', '字体': 'sans serif kai hand round mono', '字重': 'thin light regular medium bold heavy',
+        '排版': 'c r w:40 lh:1.4 nowrap', '颜色': 'ink orange pink peach muted line white #RRGGBB；+颜色 填充；+orange>pink 渐变',
+        '线': 'w3 dash dots dot flow', '质感': '40% -6deg glow shadow round top',
+        '出场': 'rise fade pop slide draw wipe blur zoom spin drop bounce grow stretch left right up down type chars none',
+        '持续': 'float pulse breathe sway bob orbit turn spinfast blink shake', '移动': 'to:x,y along:@名字 loop',
+        '节奏': '& 同时；+2.5 第几秒；dur:1.2；ease:back；slow fast', '位置': 'below: above: left: right: on:@名字 gap:3',
+        '其他': '@名字 命名（跨页同名就地变形）；count 数字滚动',
     },
-    'edit': '{"node":"id","set":{…}} | {"changes":[{"node","set"}…]} | {"add":[节点…]} | {"remove":["id"]} | {"text":"新主句"}；宏的 id 可整体修改/删除',
-    'more': '完整说明与配方：references/canvas.md、references/recipes.md',
+    'edit': '@名字 参数（改） | x @名字（删） | 新的一行（加） | cam … | == 新句子（换主句）',
+    'more': 'references/sketch.md；例子 examples/*.sketch',
 }
+
+
+def cmd_build():
+    script = HERE / 'build.sh'
+    if platform.system() != 'Darwin':
+        raise Fail('unsupported', '只能在 Mac 上编译原生窗口', '其他系统会自动用浏览器窗口显示白板。')
+    r = subprocess.run(['/bin/bash', str(script)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Fail('build-failed', (r.stderr or r.stdout).strip()[-1500:] or '编译失败',
+                   '把这段错误发给帮你改技能的人；在修好之前，白板会用浏览器窗口显示。')
+    return {'ok': True, 'status': 'built', 'app': str(board.NATIVE), 'next': '运行 board.py demo 看效果。'}
 
 
 def cmd_doctor():
@@ -684,31 +899,28 @@ def cmd_doctor():
         checks.append(item)
 
     darwin = platform.system() == 'Darwin'
-    add('macOS', darwin, platform.platform(), '原生播放器只能在 Mac 上运行。')
-    if darwin:
-        ver = platform.mac_ver()[0] or '0'
-        try:
-            major = int(ver.split('.')[0])
-        except ValueError:
-            major = 0
-        add('macOS 版本', major >= 27, ver, '当前播放器构建声明需要 macOS 27 或更高。', level='warning')
-        add('Apple 芯片', platform.machine() == 'arm64', platform.machine(), '播放器只编译了 arm64。')
+    add('系统', True, platform.platform())
     add('Python', sys.version_info >= (3, 8), sys.version.split()[0], '需要 Python 3.8 或更高。')
-    add('/usr/bin/python3', os.path.exists('/usr/bin/python3'), '播放器保存/打开文稿时调用它',
-        '安装命令行工具：xcode-select --install', level='warning')
-    exe = board.APP / 'Contents' / 'MacOS' / 'DotWhiteboard'
-    add('播放器文件', exe.exists(), str(board.APP), '把「Dot 白板.app」放在本技能根目录（与 scripts 同级）。')
-    if exe.exists():
-        add('播放器可执行', os.access(str(exe), os.X_OK), str(exe), 'chmod +x "%s"' % exe)
-    for name in ('演示文稿.py', '当前聊天.py', '现场白板.py', 'canvas_schema.py', 'whiteboard.py', 'shapes.py'):
-        add('脚本 ' + name, (HERE / name).exists(), '播放器和引擎按这个文件名加载', '不要改名或删除 scripts/%s。' % name)
-    if darwin and exe.exists():
-        q = subprocess.run(['xattr', '-p', 'com.apple.quarantine', str(board.APP)], capture_output=True)
-        add('未被隔离', q.returncode != 0, '从网络/压缩包解出的 App 会带隔离属性，可能被拦截',
-            'xattr -dr com.apple.quarantine "%s"' % board.APP)
-        c = subprocess.run(['codesign', '--verify', '--deep', str(board.APP)], capture_output=True, text=True)
-        add('签名有效', c.returncode == 0, (c.stderr or '').strip()[:200],
-            'codesign --force --deep -s - "%s"' % board.APP)
+    engine = HERE.parent / 'engine'
+    for name in ('index.html', 'board.js', 'board.css', 'icons.json'):
+        add('引擎 ' + name, (engine / name).exists(), str(engine), '把整个技能文件夹完整放好（engine/ 不能少）。')
+    for name in ('board_server.py', 'sketch.py', 'scene.py', '演示文稿.py', '现场白板.py', 'whiteboard.py', 'shapes.py', 'canvas_schema.py'):
+        add('脚本 ' + name, (HERE / name).exists(), '', '不要改名或删除 scripts/%s。' % name)
+    exe = board.NATIVE / 'Contents' / 'MacOS' / 'DynamicWhiteboard'
+    if darwin:
+        add('原生窗口', exe.exists(), str(board.NATIVE) if exe.exists() else '还没编译；现在会用浏览器的无边框窗口代替',
+            'python3 -B "%s" build' % (HERE / 'board.py'), level='warning')
+        if not exe.exists():
+            has_swiftc = subprocess.run(['/usr/bin/which', 'swiftc'], capture_output=True).returncode == 0
+            add('编译工具 swiftc', has_swiftc, '编译原生窗口需要', 'xcode-select --install', level='warning')
+        else:
+            q = subprocess.run(['xattr', '-p', 'com.apple.quarantine', str(board.NATIVE)], capture_output=True)
+            add('原生窗口未被隔离', q.returncode != 0, '', 'xattr -dr com.apple.quarantine "%s"' % board.NATIVE, level='warning')
+        add('/usr/bin/python3', os.path.exists('/usr/bin/python3'), '原生窗口用它启动白板服务',
+            'xcode-select --install', level='warning' if not exe.exists() else 'error')
+        browsers = [b for b in ('Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium') if pathlib.Path('/Applications/%s.app' % b).exists()]
+        add('备用浏览器', bool(browsers) or exe.exists(), '、'.join(browsers) or '没有 Chrome 类浏览器，备用模式会用默认浏览器（带地址栏）',
+            '编译原生窗口，或安装 Chrome。', level='warning')
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         probe = DATA / ('.probe-%d' % os.getpid())
@@ -718,17 +930,20 @@ def cmd_doctor():
     except OSError as exc:
         add('数据目录可写', False, '%s：%s' % (DATA, exc), '检查该目录权限，或设置 DOT_WHITEBOARD_DATA。')
     s = renderer()
-    running = False
+    alive = False
     if s.get('pid'):
         try:
             os.kill(s['pid'], 0)
-            running = True
+            alive = True
         except (ProcessLookupError, PermissionError, TypeError):
-            running = False
-    add('播放器进程', True, '运行中，%s' % s.get('visibility') if running else '未运行（say 时会自动启动）')
+            alive = False
+    if alive and s.get('visibility') == 'visible' and s.get('renderer') != 'engine':
+        add('播放器版本', False, '旧版「Dot 白板.app」正在显示', '先按 Esc 关掉旧白板，新白板才能接管。')
+    else:
+        add('播放器', True, ('运行中（%s）' % s.get('host', '')) if alive and s.get('visibility') == 'visible' else '未运行（say 时自动打开）')
     problems = [c for c in checks if not c['ok'] and c.get('level') == 'error']
     return {'ok': not problems, 'status': 'ready' if not problems else 'problems', 'checks': checks,
-            'next': '运行 board.py demo 看一段示例；看到窗口说明链路通了。' if not problems else '按 fix 逐项修复后再运行 doctor。'}
+            'next': '运行 board.py demo 看一段示例。' if not problems else '按 fix 逐项修复后再运行 doctor。'}
 
 
 # ---------- MCP（可选：给只支持 MCP 的宿主） ----------
@@ -739,22 +954,23 @@ def _schema(props, required=()):
 
 ANY = {}
 MCP_TOOLS = {
-    'whiteboard_say': ('把 1–8 页送到白板。pages 元素可以是字符串或 {text, choices?, drawing?|canvas?}。mode=auto（默认）：用户已看完前面的页就立刻显示，否则排在后面；now 立刻跳页；queue 只排队。new=true 替换白板上其他内容。',
-                       _schema({'pages': {'type': 'array', 'items': ANY}, 'mode': {'type': 'string', 'enum': ['auto', 'now', 'queue']},
-                                'topic': {'type': 'string'}, 'new': {'type': 'boolean'}}, ['pages'])),
+    'whiteboard_say': ('把 1–8 页送到白板。首选 sketch：速写文本（== 开页，每行一个元素，语法见 whiteboard_describe）。也可用 pages：字符串或 {text, sketch?, choices?, drawing?|canvas?}。mode=auto（默认）用户看完前面的页才跳；now 立刻跳；queue 只排队。new=true 替换白板上其他内容。',
+                       _schema({'sketch': {'type': 'string'}, 'pages': {'type': 'array', 'items': ANY},
+                                'mode': {'type': 'string', 'enum': ['auto', 'now', 'queue']},
+                                'topic': {'type': 'string'}, 'new': {'type': 'boolean'}, 'plain': {'type': 'boolean'}})),
     'whiteboard_ask': ('显示一个问题并等待用户在白板上回答（点选或打字）。返回 answer / continue / timeout / closed / interrupted。',
                        _schema({'text': {'type': 'string'}, 'choices': {'type': 'array', 'items': {'type': 'string'}},
-                                'drawing': {'type': 'object'}, 'canvas': {'type': 'object'}, 'seconds': {'type': 'number'},
+                                'drawing': {'type': 'object'}, 'canvas': {'type': 'object'}, 'board': {'type':'object'}, 'sketch': {'type':'string'}, 'seconds': {'type': 'number'},
                                 'topic': {'type': 'string'}, 'new': {'type': 'boolean'}}, ['text'])),
     'whiteboard_wait': ('继续等待用户在白板上的输入。', _schema({'seconds': {'type': 'number'}})),
-    'whiteboard_edit': ('原位修改当前页：{node,set} / changes / add / remove / text / transition。',
-                        _schema({'page': {'type': 'string'}, 'node': {'type': 'string'}, 'set': {'type': 'object'},
+    'whiteboard_edit': ('原位修改当前页。首选 sketch：@名字 参数 改、x @名字 删、新行 加、== 新句子 换主句。也接受 JSON：{node,set} / changes / add / remove / text。',
+                        _schema({'sketch': {'type': 'string'}, 'page': {'type': 'string'}, 'node': {'type': 'string'}, 'set': {'type': 'object'},
                                  'changes': {'type': 'array', 'items': ANY}, 'add': {'type': 'array', 'items': ANY},
                                  'remove': {'type': 'array', 'items': {'type': 'string'}}, 'text': {'type': 'string'},
                                  'transition': {'type': 'string'}})),
     'whiteboard_close': ('讲完后收起白板。', _schema({'force': {'type': 'boolean'}})),
     'whiteboard_status': ('白板是否打开、当前页、是否有用户留言。', _schema({})),
-    'whiteboard_check': ('不打开窗口，只校验页面并返回展开后的图元。', _schema({'pages': {'type': 'array', 'items': ANY}}, ['pages'])),
+    'whiteboard_check': ('不打开窗口，只校验页面。', _schema({'sketch': {'type': 'string'}, 'pages': {'type': 'array', 'items': ANY}})),
     'whiteboard_describe': ('读取页面与图元语法、图形宏。', _schema({})),
 }
 BLOCKING = {'whiteboard_ask', 'whiteboard_wait'}
@@ -764,20 +980,20 @@ def call(name, a):
     if not isinstance(a, dict):
         raise Fail('invalid', '工具参数应为 JSON 对象。')
     if name == 'whiteboard_say':
-        return cmd_say(a.get('pages'), a.get('mode', 'auto'), a.get('topic'), bool(a.get('new')))
+        return cmd_say(a.get('sketch') or a.get('pages'), a.get('mode', 'auto'), a.get('topic'), bool(a.get('new')), bool(a.get('plain')))
     if name == 'whiteboard_ask':
-        page = {k: a[k] for k in ('text', 'choices', 'drawing', 'canvas') if k in a}
+        page = {k: a[k] for k in ('text', 'choices', 'drawing', 'canvas', 'board', 'sketch') if k in a}
         return cmd_ask(page, None, a.get('seconds', 45), a.get('topic'), bool(a.get('new')))
     if name == 'whiteboard_wait':
         return cmd_wait(a.get('seconds', 45))
     if name == 'whiteboard_edit':
-        return cmd_edit(a)
+        return cmd_edit(a['sketch'] if 'sketch' in a else a)
     if name == 'whiteboard_close':
         return cmd_close(bool(a.get('force')))
     if name == 'whiteboard_status':
         return cmd_status()
     if name == 'whiteboard_check':
-        return cmd_check(a.get('pages'))
+        return cmd_check(a.get('sketch') or a.get('pages'), bool(a.get('plain')))
     if name == 'whiteboard_describe':
         return {'ok': True, 'grammar': DESCRIBE}
     raise Fail('invalid', '未知工具 %s' % name)
@@ -826,9 +1042,9 @@ def serve():
             send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {
                 'protocolVersion': version if version in ('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25') else '2025-06-18',
                 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'dynamic-whiteboard', 'version': VERSION},
-                'instructions': '本机白板是你的输出端。关系、机制、流程、变化或比较画出来更清楚时，自己调用 whiteboard_say；'
-                                '每页一个要点，已在白板表达的内容无需在聊天里重复。需要用户决定时用 whiteboard_ask。讲完 whiteboard_close。'
-                                '用户按 Esc 后不要再自动打开。'}})
+                'instructions': '本机白板是你的输出端。讲解时用 whiteboard_say 的 sketch 自己画：每页一句话、几行元素，'
+                                '构图和动作由你决定，每页都不同。语法先看 whiteboard_describe。需要用户决定时用 whiteboard_ask。'
+                                '讲完 whiteboard_close；用户按 Esc 后不要再自动打开。'}})
         elif method == 'ping':
             send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {}})
         elif method == 'tools/list':
@@ -891,6 +1107,7 @@ def main(argv=None):
     sp.add_argument('--queue', action='store_true', help='只排在后面，不跳页')
     sp.add_argument('--new', action='store_true', help='新开一块白板（替换正在显示的内容）')
     sp.add_argument('--topic', help='新白板左上角的标题')
+    sp.add_argument('--plain', action='store_true', help='不自动构图，用播放器原生的对话页')
     sp = sub.add_parser('ask', help='显示一个问题并等回答')
     inputs(sp)
     sp.add_argument('--choice', action='append', help='选项，最多 3 个')
@@ -906,9 +1123,12 @@ def main(argv=None):
     sub.add_parser('status', help='白板现在的状态')
     sp = sub.add_parser('check', help='只校验，不打开窗口')
     inputs(sp)
+    sp.add_argument('--full', action='store_true', help='同时输出展开后的图元')
     sub.add_parser('describe', help='页面与图元语法')
     sub.add_parser('doctor', help='检查安装与环境')
-    sub.add_parser('demo', help='播放示例「声音怎样传播」')
+    sub.add_parser('build', help='编译原生窗口（Mac）')
+    sp = sub.add_parser('demo', help='播放示例（潮汐 / 哑铃训练）')
+    sp.add_argument('name', nargs='?', default='潮汐')
     sp = sub.add_parser('present', help='打开一份完整文稿 JSON')
     sp.add_argument('--file', required=True)
     sub.add_parser('mcp', help='以 MCP 标准输入输出服务运行')
@@ -921,7 +1141,7 @@ def main(argv=None):
     try:
         if args.cmd == 'say':
             value = gather(args)
-            result = cmd_say(value, 'queue' if args.queue else ('now' if args.now else 'auto'), args.topic, args.new)
+            result = cmd_say(value, 'queue' if args.queue else ('now' if args.now else 'auto'), args.topic, args.new, args.plain)
         elif args.cmd == 'ask':
             result = cmd_ask(gather(args), args.choice, args.wait, args.topic, args.new)
         elif args.cmd == 'wait':
@@ -933,17 +1153,19 @@ def main(argv=None):
         elif args.cmd == 'status':
             result = cmd_status()
         elif args.cmd == 'check':
-            result = cmd_check(gather(args))
+            result = cmd_check(gather(args), full=args.full)
         elif args.cmd == 'describe':
             result = {'ok': True, 'grammar': DESCRIBE}
         elif args.cmd == 'doctor':
             result = cmd_doctor()
+        elif args.cmd == 'build':
+            result = cmd_build()
         elif args.cmd == 'demo':
-            result = cmd_demo()
+            result = cmd_demo(args.name)
         elif args.cmd == 'present':
             result = cmd_present(args.file)
         elif args.cmd == 'version':
-            result = {'ok': True, 'version': VERSION, 'app': str(board.APP), 'data': str(DATA)}
+            result = {'ok': True, 'version': VERSION, 'native': str(board.NATIVE), 'native_built': board.native_ready(), 'data': str(DATA)}
         else:
             p.print_help()
             return 0

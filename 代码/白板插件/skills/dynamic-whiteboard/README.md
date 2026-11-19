@@ -1,68 +1,31 @@
-# 动态白板 · 输出端 skill 2.0
+# 动态白板 4.0
 
-把 Dot 白板从 GPT-Live 里拆出来，做成一个独立的输出端 skill。任何能运行本机命令的大模型（Codex、Claude Code、个人 dot 的本地任务等）都能在回答时调用它：送一句话、画一张会动的图，或者问一个问题再等回答。只支持 MCP 的宿主也可以接入。
+模型可以在同一场对话里开板、画图、提问，再按你的回答续页。每页都能用文字、图形、镜头和动画重新编排。渲染引擎随包提供，在同一个窗口更新画面。
 
-给模型看的说明在 `SKILL.md`，这份 README 是写给你的。
+## 安装和试用
 
-## 为什么之前接不进 GPT-Live
+在 Apple 芯片 Mac 上解压，将整个 `dynamic-whiteboard` 文件夹放进宿主的技能目录。Codex 的目录是 `~/.codex/skills/`。安装包带有已编译的 AppKit / WebKit 窗口，使用系统 Python 3。
 
-`GPT-Live白板.py` 只能挂到「你自己用 API 创建」的 GPT-Live 通话上：需要那场通话的 `session.id` 和创建它的 API 密钥。ChatGPT 自带的语音和个人 dot 的主对话都不会把这两样交给本地插件，所以这条路从结构上就接不通，不是代码 bug。这个 skill 不再依赖它。
-
-## 安装
-
-1. 把整个 `dynamic-whiteboard` 文件夹放到宿主读取技能的目录，例如：
-   - Codex：`~/.codex/skills/dynamic-whiteboard`
-   - Claude Code：`~/.claude/skills/dynamic-whiteboard`
-   - 其他宿主：放到它读取技能的目录即可，路径里有中文没关系
-2. 使用系统 Python 检查环境，再播放内置示例。
-   ```sh
-   python3 -B ~/.codex/skills/dynamic-whiteboard/scripts/board.py doctor
-   python3 -B ~/.codex/skills/dynamic-whiteboard/scripts/board.py demo
-   ```
-   `doctor` 的每个失败项都附带 `fix` 命令。`demo` 弹出「声音怎样传播」就说明链路通了。
-
-只支持 MCP 的宿主，在它的 MCP 配置里加一项（路径换成你的实际路径）：
-
-```json
-{"mcpServers": {"dynamic_whiteboard": {"type": "stdio", "command": "/usr/bin/python3",
-  "args": ["-B", "/Users/你/.codex/skills/dynamic-whiteboard/scripts/board.py", "mcp"]}}}
+```sh
+W="$HOME/.codex/skills/dynamic-whiteboard/scripts/board.py"
+/usr/bin/python3 -B "$W" doctor
+/usr/bin/python3 -B "$W" demo 潮汐
 ```
 
-## 和 1.4 插件比，改了什么
+`demo 哑铃训练` 播放六页动作示意，`demo 声音怎样传播` 回放旧版三页文稿。空格往下看，末页按空格会向模型返回「继续」。输入过程中可以打空格，回车提交，Esc 收起窗口。按 Esc 后 20 分钟内，普通发页会尊重退出状态。
 
-- **一个入口。**模型只调用 `scripts/board.py`：`say`、`ask`、`wait`、`edit`、`close`。会话 id、generation、revision、eventID 都由脚本自动维护。CLI 和 MCP 共用当前现场会话。
-- **智能翻页。**用户还没看完前面的页时，新页自动排在后面，不再一下跳过用户没看到的内容。
-- **插话不丢。**用户在白板上打了字，模型下一次调用 `say`、`edit` 或 `close` 时会拿到原话（`interrupted`），它回应之后再继续；按空格「继续」会自动续上。
-- **尊重 Esc。**用户按 Esc 后 20 分钟内，模型不能自动重开，除非显式加 `--new`。用户正在打字时，不收起白板，也不强行跳页。
-- **图形宏。**`wave`、`curve`、`flow`、`cycle`、`bars` 由脚本展开成基础图元，模型不用再手算贝塞尔控制点。原生播放器接收展开后的基础图元。
-- **边讲边画。**`edit` 支持 `add`、`remove`、整组修改；用户刚作答时，改好的图会自动作为新的一页接在回答后面。
-- **能自查。**`check` 不开窗口就能校验，`doctor` 检查系统、隔离属性、签名、脚本和数据目录。常见输入错误附带 `hint`，模型能自己改正。
-- **说明重写。**SKILL.md 只讲模型需要的内容，完整语法和 12 个已验证的版式放在 `references/` 里。
+## 接入对话
 
-## 文件
+能执行本机命令的模型可以按 [SKILL.md](SKILL.md) 调用 `say`、`ask`、`wait`、`edit` 和 `close`。宿主使用 stdio MCP 时，以系统 Python 启动安装目录的 `scripts/board.py mcp`，即可使用八个 `whiteboard_*` 工具。模型负责决定何时开板和说什么。回答会回到正在等待的调用，或由下一次工具调用取回。
 
-```
-dynamic-whiteboard/
-├── SKILL.md                 给模型看的使用说明
-├── README.md                给你看的这份
-├── Dot 白板.app             原生播放器（AppKit / Core Animation）
-├── scripts/
-│   ├── board.py             统一入口（命令行 + 可选 MCP）
-│   ├── shapes.py            图形宏
-│   ├── whiteboard.py        播放器文件协议（未改）
-│   ├── canvas_schema.py     图元校验
-│   ├── 演示文稿.py          文稿模型及输入保护
-│   ├── 现场白板.py          现场会话与整批发页
-│   └── 当前聊天.py          播放器的聊天跟随功能要用（未改）
-├── references/canvas.md     完整画布语法和宏参数
-├── references/recipes.md    12 个已验证的版式
-└── examples/声音怎样传播.白板.json
+```sh
+/usr/bin/python3 -B "$W" ask "今天运动了吗？" --choice "运动了" --choice "还没有"
 ```
 
-没有带进来的：`GPT-Live白板.py` 和它依赖的 `连接依赖.zip`（websocket 库）。需要时，原插件包里仍然有。
+## 画面与兼容性
 
-## 需要知道的
-
-- 本机测试使用 Apple 芯片 Mac、macOS 27.0.1 和系统 Python 3.9.6。三页示例、八页整批追加、空格、Esc、原位改图、输入保护、中文文本和选项回传均通过原生播放器验证。跨页曲线的原位变形通过 Core Animation 图层身份和路径动画检查。
-- 同一时刻由一个对话主导现场白板。新旧两套共用同一个数据目录 `~/Library/Application Support/DotWhiteboard` 和同一个窗口，可以并存。建议停用旧插件里的 GPT-Live 连接，免得两边同时往白板写内容。
-- 白板上的输入，只有在模型调用 `ask` 或 `wait`（或下一次 `say`）时才会交给它。这是「输出端」的天然边界：模型不在等的时候，用户的话会先存在白板上。
+- 每次可送 1–8 页。速写支持富文本、渐变、路径、镜头推拉、沿线动画、同名元素变形和 1541 个内置图标。用 `check` 可以预估版面，原生窗口显示后会回传实测布局。
+- 可用的图元、时间和版式范围见[场景规范](references/scene.md)与[速写参考](references/sketch.md)。2.0 的 `drawing`、`canvas` 和已有 JSON 文稿可继续传入，旧文稿在新引擎中转换绘制。[旧画布说明](references/canvas.md) · [旧版图形配方](references/recipes.md)
+- 原生窗口内使用系统 WebKit。本机服务只监听回环地址，跟随窗口退出。源码安装可以运行 `board.py build` 重新编译。有本机浏览器时，缺少原生窗口也可通过浏览器显示。
+- 此发行包在 Apple 芯片、macOS 27.0.1 和系统 Python 3.9.6 上验证。单独的压缩包可供本机命令或 MCP 宿主使用。ChatGPT 内置语音自主调用、取回回答的完整流程仍待实测。
+- [Lucide 图标许可](engine/LICENSE-lucide.txt)随安装包分发。

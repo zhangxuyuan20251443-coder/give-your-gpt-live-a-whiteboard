@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "dynamic-whiteboard",
-  "version": "2.0.0",
+  "version": "4.0.0",
   "description": "模型通过本机命令或 MCP 开板、绘图、提问，并按观众的回答继续讲解。",
   "extensions": {
     "com.openai": {
@@ -9,7 +9,7 @@
       "interface": {
         "displayName": "动态白板",
         "shortDescription": "把一句话、一张图或一个问题放到 Mac 白板上",
-        "longDescription": "在对话中展示短句和动态图形。观众可以点选、输入、按空格继续或按 Esc 退出。原生播放器适用于 Apple 芯片 Mac，当前构建要求 macOS 27 或更高版本，以及可用的 /usr/bin/python3。",
+        "longDescription": "在对话中展示短句和动态图形。观众可以点选、输入、按空格继续或按 Esc 退出。原生播放器适用于 Apple 芯片 Mac，本版已在 macOS 27.0.1 和系统 Python 3 上验证。",
         "category": "Productivity",
         "capabilities": [
           "展示与更新白板",
@@ -28,7 +28,7 @@
         "commerce": false
       },
       "publication": {
-        "release_notes": "2.0 提供独立 skill、自动会话管理、图形宏、输入保护和跨页变形。"
+        "release_notes": "4.0 合并速写、可持续更新的 WebKit 画布、镜头动画和实测排版。"
       }
     }
   }

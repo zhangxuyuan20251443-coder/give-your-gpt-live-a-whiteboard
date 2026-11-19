@@ -1,6 +1,6 @@
 {
   "name": "dynamic-whiteboard",
-  "version": "2.0.0",
+  "version": "4.0.0",
   "description": "对话模型用 CLI 或 MCP 发页、绘图、收取回答，画面在 Mac 上原生播放。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

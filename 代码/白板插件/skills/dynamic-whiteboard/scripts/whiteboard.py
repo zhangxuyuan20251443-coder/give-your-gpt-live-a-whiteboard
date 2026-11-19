@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Mac whiteboard controller. No network, web server or third-party packages."""
+"""Whiteboard file protocol and local WebKit or browser launcher."""
 import argparse, json, os, pathlib, subprocess, sys, time, uuid, select
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
 sys.dont_write_bytecode = True
@@ -9,7 +9,9 @@ bundled_transport = ROOT / 'scripts' / '连接依赖.zip'
 if bundled_transport.is_file():
     sys.path.insert(0,str(bundled_transport))
 DATA = pathlib.Path(os.environ.get('DOT_WHITEBOARD_DATA',str(pathlib.Path.home() / 'Library/Application Support/DotWhiteboard')))
-APP = ROOT / 'Dot 白板.app'
+NATIVE = ROOT / '动态白板.app'          # 新播放器（scripts/build.sh 编译）
+LEGACY = ROOT / 'Dot 白板.app'          # 旧播放器：只认旧格式，留作备用
+APP = NATIVE
 
 def read(path):
     try: return json.loads(path.read_text())
@@ -17,7 +19,7 @@ def read(path):
 
 def write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     os.replace(temp, path)
 
@@ -29,12 +31,39 @@ def visible():
         return True
     return False
 
+def native_ready():
+    return sys.platform=='darwin' and (NATIVE/'Contents'/'MacOS'/'DynamicWhiteboard').exists() and os.environ.get('DOT_WHITEBOARD_HOST')!='browser'
+
 def open_app(*flags):
-    args=['open','-n','-a',str(APP)]
-    if 'DOT_WHITEBOARD_DATA' in os.environ:args+=['--env','DOT_WHITEBOARD_DATA='+str(DATA)]
-    if 'DOT_WHITEBOARD_DATA' in os.environ and os.environ.get('DOT_WHITEBOARD_TEST_WINDOW')=='1':
-        args.insert(1,'-g');flags=(*flags,'--test-window')
-    subprocess.run(args+['--args',*flags],check=True)
+    """打开新播放器：编译过原生窗口就用它，否则用本机浏览器的无边框窗口。"""
+    show=flags[flags.index('--external')+1] if '--external' in flags else ''
+    if native_ready():
+        args=['open','-n','-a',str(NATIVE)]
+        if 'DOT_WHITEBOARD_DATA' in os.environ:args+=['--env','DOT_WHITEBOARD_DATA='+str(DATA)]
+        args += ['--args','--show',show]
+        if 'DOT_WHITEBOARD_DATA' in os.environ and os.environ.get('DOT_WHITEBOARD_TEST_WINDOW') == '1':
+            args.append('--test-window')
+        subprocess.run(args,check=True);return
+    server=ROOT/'scripts'/'board_server.py'
+    proc=subprocess.Popen([sys.executable,'-B',str(server),'--show',show,'--host','browser'],stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True,env=os.environ.copy())
+    ready,_,_=select.select([proc.stdout],[],[],8)
+    line=proc.stdout.readline().decode() if ready else ''
+    if not line.startswith('PORT '):
+        proc.kill();raise OSError('白板服务没有启动')
+    _, port, key = line.split()
+    url='http://127.0.0.1:%s/%s/' % (port, key)
+    write(DATA/'host-url.json',{'url':url,'pid':proc.pid,'at':time.time()})
+    open_browser(url)
+
+def open_browser(url):
+    if os.environ.get('DOT_WHITEBOARD_NO_BROWSER')=='1':return
+    if sys.platform=='darwin':
+        for app in ('Google Chrome','Microsoft Edge','Brave Browser','Chromium','Arc'):
+            if pathlib.Path('/Applications/%s.app'%app).exists() and app!='Arc':
+                subprocess.run(['open','-na',app,'--args','--app='+url,'--start-fullscreen','--new-window'],check=False);return
+        subprocess.run(['open',url],check=False);return
+    import webbrowser;webbrowser.open(url)
 
 def receive_event(wait, expected=None):
     deadline=time.monotonic()+wait

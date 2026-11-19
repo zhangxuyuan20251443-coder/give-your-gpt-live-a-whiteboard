@@ -4,7 +4,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "for root in \"$1\" \"$PLUGIN_ROOT\" \"$CODEX_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_ROOT\" \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/local/dynamic-whiteboard/2.0.0\"; do [ -n \"$root\" ] && [ -f \"$root/运行时/scripts/演示文稿.py\" ] && exec /usr/bin/python3 -B \"$root/运行时/scripts/演示文稿.py\" mcp; done; exit 1",
+        "for root in \"$1\" \"$PLUGIN_ROOT\" \"$CODEX_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_ROOT\" \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/local/dynamic-whiteboard/4.0.0\"; do [ -n \"$root\" ] && [ -f \"$root/运行时/scripts/演示文稿.py\" ] && exec /usr/bin/python3 -B \"$root/运行时/scripts/演示文稿.py\" mcp; done; exit 1",
         "dynamic-whiteboard",
         "${PLUGIN_ROOT}"
       ]
@@ -13,7 +13,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "for root in \"$1\" \"$PLUGIN_ROOT\" \"$CODEX_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_ROOT\" \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/local/dynamic-whiteboard/2.0.0\"; do [ -n \"$root\" ] && [ -f \"$root/skills/dynamic-whiteboard/scripts/board.py\" ] && exec /usr/bin/python3 -B \"$root/skills/dynamic-whiteboard/scripts/board.py\" mcp; done; exit 1",
+        "for root in \"$1\" \"$PLUGIN_ROOT\" \"$CODEX_PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_ROOT\" \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/local/dynamic-whiteboard/4.0.0\"; do [ -n \"$root\" ] && [ -f \"$root/skills/dynamic-whiteboard/scripts/board.py\" ] && exec /usr/bin/python3 -B \"$root/skills/dynamic-whiteboard/scripts/board.py\" mcp; done; exit 1",
         "dynamic-whiteboard",
         "${PLUGIN_ROOT}"
       ]

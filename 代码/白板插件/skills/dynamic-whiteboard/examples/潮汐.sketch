@@ -1,0 +1,26 @@
+== 潮汐，是月球在**拉**海水。 | blend
+潮汐从哪来？ | 8,18 l light
+月球在**拉**海水 | 8,30 xl
+blob 30,66 13 +peach>pink 35% @sea
+o 30,66 10 +#7FB2E5 @earth
+o 82,30 4 +ink orbit @moon
+~> 77,33 60,42 42,58 orange w3 flow @pull
+
+== 近的一侧被拉得更高。 | push
+o 34,52 15 +#7FB2E5 @earth
+blob 37,52 21 +peach>pink 40% breathe @sea
+o 84,52 4 +ink @moon
+-> 78,52 58,52 orange w4 dot @pull
+近侧 · 涨潮 | 48,30 m bold orange
+远侧也鼓起 | 6,30 m muted
+引力差，拉出两个潮峰 | 8,84 l light +1.4
+cam 40,52 1.25 +2
+
+== 地球自转一圈，**经过两次涨潮**。 | lift
+o 50,50 15 +#7FB2E5 turn @earth
+blob 50,50 22 +peach>pink 35% breathe @sea
+arc 50,50 30 20 160 orange w3 dash @arcA
+arc 50,50 30 200 340 orange w3 dash @arcB
+涨潮 | 78,48 m bold orange
+涨潮 | 22,48 m bold orange r
+一天两次，相隔约 12 小时 25 分 | 50,86 m muted c +1.2

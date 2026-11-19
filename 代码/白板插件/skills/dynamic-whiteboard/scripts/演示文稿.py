@@ -21,8 +21,11 @@ def short(value, limit):
     return isinstance(value,str) and 0<len(value.strip())<=limit
 
 def validate_page(page):
-    check(isinstance(page,dict) and not set(page)-{'id','title','body','canvas','scene','interaction','visualStyle'},'未知页字段')
-    check(page.get('visualStyle') in (None,'live-side','live-full'),'未知画面样式')
+    check(isinstance(page,dict) and not set(page)-{'id','title','body','canvas','scene','interaction','visualStyle','board'},'未知页字段')
+    check(page.get('visualStyle') in (None,'live-side','live-full','board'),'未知画面样式')
+    if page.get('board') is not None:
+        import scene as _scene
+        _scene.validate_scene(page['board'])
     check(short(page.get('id'),64) and short(page.get('title'),120),'需要短 id 与主句')
     check(isinstance(page.get('body',''),str) and len(page.get('body',''))<=160,'附注最多160字')
     validate_canvas(page.get('canvas'))
@@ -70,7 +73,7 @@ def fit_live_window(state,index):
 def activate(state,index,action,new_turn=True):
     doc=state['document'];page=doc['pages'][index]
     state.update(title=page['title'],body=page.get('body',''),subtitle=doc['title'],
-                 items=[],startsAt=None,endsAt=None,canvas=page.get('canvas'),scene=page.get('scene'),
+                 items=[],startsAt=None,endsAt=None,canvas=page.get('canvas'),board=page.get('board'),scene=page.get('scene'),
                  interaction=page.get('interaction'),visualStyle=page.get('visualStyle'),pageIndex=index,pageCount=len(doc['pages']),pageID=page['id'],
                  action=action,writtenAt=time.time())
     if new_turn:
